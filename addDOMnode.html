@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<title>JavaScript - addDOMnode()</title>
+<script>
+// Copyright 2015 Nick O'Connor. Feel free to use with credit attached
+// function for non-library pure DOM node construction
+//
+// uses code snippets from Prototypejs, Mike Taylor and David Walsh
+//
+// elements with children need a name to reference, as in:
+// var para = addDOMnode('p', document.body, 'Click on this link to visit the site: ');
+// followed by EITHER
+// addDOMnode('a', para, 'visit site', {href:"http://www.example.com/", target:"_blank"});
+// OR
+// para.addDOMnode('a', 'visit site', {href:"http://www.example.com/", target:"_blank"});
+// 
+// arguments
+// @ tagName: (string) HTML element [REQUIRED]
+// @ parentElm: (string or JS variable) the parent element - if a string, the element with matching ID attribute, or CSS query (fails if not found), if a defined variable then that item, or body tag if not defined
+// @ content: (string) textual content within the tag - a text node. Defaults to placeholder text for certain input elements if placeholder is undefined (text, search, url, tel, email, and password)
+// @ attribsObj: (object) miscellaneous attributes to add
+// @ styleRules: (object or string) styles to be added, if object then properties need to be camelCased
+// @ insertPos: (string) insertion position relative to the parent element (before, after, top or bottom), default is botton
+//
+// form elements that use the value attribute: the code will look first for a value attribute passed via attribsObj, otherwise it will use the content parameter
+//
+// to do:
+//	- validation
+// - convert event attribs to event listener functions? [DONE]
+// - required attributes
+// - using quirks mode?
+// - implement the native DOM checking routine for browser-specific element support
+//
+// begin
+function addDOMnode(tagName, parentElm, content, attribsObj, styleRules, insertPos) {
+	// use own function to append a text node to element
+	// need to handle elements that need the value attribute changing and other non-textNode cases
+	if (!Element.addText) Object.defineProperty(Element.prototype, "addText", {
+		enumerable: false,
+		writable: true,
+		value: function(txt) {
+			return (this.tagName && this.tagName=="input") ? this.value=txt : this.appendChild(document.createTextNode(txt));
+		}
+	});
+	// david walsh
+	if (!Object.addCSSRule) Object.defineProperty(Object.prototype, "addCSSRule", {
+		enumerable: false,
+		writable: true,
+		value: function(selector, rules, index) {
+//			addCSSRule(this, selector, rules, index);
+			if("insertRule" in this) {
+				this.insertRule(selector + "{" + rules + "}", index);
+			}
+			else if("addRule" in this) {
+				this.addRule(selector, rules, index);
+			}
+		}
+	});	
+	// from Prototypejs
+	if (!String.trim) Object.defineProperty(String.prototype, "trim", {
+		enumerable: false,
+		writable: true,
+		value: function() {
+			return this.replace(/^\s+|\s+$/g,'');
+		}
+	});	
+	if (!String.camelize) Object.defineProperty(String.prototype, "camelize", {
+		enumerable: false,
+		writable: true,
+		value: function() {
+			return this.replace(/-+(.)?/g, function(match, chr) {
+				return chr ? chr.toUpperCase() : '';
+			});
+		}
+	});
+	if (!String.dasherize) Object.defineProperty(String.prototype, "dasherize", {
+		enumerable: false,
+		writable: true,
+		value: function() {
+			return this.replace(/([A-Z]+)([A-Z][a-z])/g, '$1-$2')
+               .replace(/([a-z\d])([A-Z])/g, '$1-$2')
+               .toLowerCase();
+		}
+	});
+	// browser detection
+	window.Browser = {
+		Opera: !!window.opera || navigator.userAgent.indexOf(' OPR/') >= 0,
+  	 // Opera 8.0+ (UA detection to detect Blink/v8-powered Opera)
+		Firefox: typeof InstallTrigger !== 'undefined',  // Firefox 1.0+
+		Safari: Object.prototype.toString.call(window.HTMLElement).indexOf('Constructor') > 0,
+    // At least Safari 3+: "[object HTMLElementConstructor]"
+		Chrome: !!window.chrome && !!this.Opera,             // Chrome 1+
+		IE: /*@cc_on!@*/false || !!document.documentMode   // At least IE6
+	}
+	// for debugging only
+	window.elemIndex = ++window.elemIndex || 0;
+	// begin
+	//looks for - in order - id, css string, object: if no match for string found, function will exit - if no object found, use <body> as parent ( or by using null as shortcut)
+	var d=document, parent = (typeof parentElm==="string") ? (d.getElementById(parentElm) || d.querySelector(parentElm) || false) : (parentElm || d.body);
+	// no parent found from string given in attributes [1] ? Cannot continue ....
+	if (!parent) {
+//		console.warn("addDOMnode could not create <"+tagName+"> - parent element '"+parentElm+"' could not be found by id or CSS selector");
+		showMessage("error", "could not create <"+tagName+"> - parent element '"+parentElm+"' could not be found by id or CSS selector");
+		return false;
+	}
+	// use a global variable to create unique missing attributes
+	var incr = window.incr || 0,
+	
+	styleRules = styleRules || {},
+	// record passed value for error messages
+	origName = tagName;
+	// check to see if in quirks mode
+	isQuirksMode = Boolean(d.compatMode == "BackCompat"),
+	dt = d.doctype,
+	debug = Boolean(attribsObj && !!attribsObj.debug),
+	makeDebugElem = function() {
+		content = "&nbsp;&lt;"+tagName+(!!attribsObj.type ? " type=\""+attribsObj.type+"\"" : "")+"&gt; not supported&nbsp;";
+		tagName = "span";
+		styleRules = "background-color: #FCC;color:#600;font-weight:bold";
+		attribsObj = {title:"Your browser does not (yet) support this element / input type"};
+	},
+	// if no doctype declared, browser might be in quirks mode so compatibility and deprecation checks will fail
+	isHtml5docType = (((dt!==null && (dt.systemId=="" || dt.internalSubset=="undefined"))) || (dt && dt.name && dt.name.toLowerCase()=="html")) ? true : false, 
+	reStr = function() { return "/^("+Array.prototype.slice.call(arguments).join(" ").split(" ").join("|")+")$/";},
+	// console message styling (not needed in production version)
+	showMessage = function(type, input, style)  {
+		msgStyle = style || "background-color:#555555;color:#eeeeee";
+		switch (type) {
+			case "info":
+				msgStyle = "background-color:#ddffdd;color:#006600";
+			break;
+			case "warn":
+				msgStyle = "background-color:#ffffdd;color:#666600";
+			break;
+			case "error":
+				msgStyle = "background-color:#ffdddd;color:#660000;font-weight:bold";
+			break;
+			case "debug":
+				msgStyle = "background-color:#224466;color:#ffffff";
+			break;
+			case "log":
+				msgStyle = "background-color:#dddddd;color:#224466";
+			break;
+			default:
+			break;
+		}
+		frmt = (typeof input == "string") ? "%s" : "%O";
+		foreText = "addDOMnode";
+		hasStackInfo = false;
+		if (typeof (new Error).stack !== "undefined") {
+			hasStackInfo = true;
+			lineMsgs = (new Error).stack.split("\n");
+			lineMsgsLast = linePre = callingFunc = calleeLine = "";
+			if (lineMsgs.length>3) {
+				lineMsgsLast = lineMsgs[lineMsgs.length-1] || "";
+				linePre = lineMsgsLast.substring(lineMsgsLast.lastIndexOf("/")+1);
+				callingFunc = linePre.substring(0, linePre.indexOf(":"));
+				calleeLineBits = lineMsgsLast.match(/\:(\d+)\:/);
+				calleeLine = ("object" === typeof calleeLineBits && calleeLineBits!==null) ? calleeLineBits[1] : null;
+			}
+			lineNumberBits = (typeof lineMsgs[2] !=="undefined") ? lineMsgs[2].match(/\:(\d+)\:/) : null;
+			lineNumber = ("object" === typeof lineNumberBits && lineNumberBits!==null) ? lineNumberBits[1] : null;
+			foreText += (lineNumber!==null) ? ":"+lineNumber+" " : "";
+		}
+		
+		
+		foreText += " ";
+//		return console[type](frmt+"%c", input, msgStyle);
+// 	Opera / IE / Safari do not like styles console messages
+		if (Browser.Opera || Browser.Safari || Browser.IE) return console[type](foreText+input); // : console[type]("%c"+input, msgStyle+(typeof style=="string" ? ";"+style : ""));
+		else return console[type]("%c"+frmt, (msgStyle+(typeof style=="string" ? ";"+style : "")+";display:block;width:100%"), foreText+input+" (element #"+elemIndex+")"+((!!hasStackInfo && lineMsgs.length>3) ? " [called from "+callingFunc+":"+calleeLine+"]" : ""));
+	},
+	toObj = function() {
+		var tmpObj = {}, tmpArr = Array.prototype.slice.call(arguments).join(" ").split(" ");
+		tmpArr.forEach(function(ar) {tmpObj[ar]=1;});
+		return tmpObj;
+	},
+	toUnder = function(str) {return str.replace(/\s/g, "_");},
+	createStyleSheet = function() {
+		newSheet = d.head.addDOMnode("style", "", {type:"text/css"});
+		// WebKit hack :(
+		//	newSheet.appendChild(d.createTextNode(""));
+//		console.info("addDOMnode created a local stylesheet for adding styles");
+		showMessage("info", "created a local stylesheet for adding styles");
+		window.localSheet = newSheet;
+		return newSheet;
+	},
+	getStyle = function(el, prop, pseudo) { pseu=pseudo || null; return d.defaultView.getComputedStyle(el,pseu).getPropertyValue(prop) || null;},
+	sheets = d.styleSheets, sLen = sheets.length || 0,
+	stdTags = "a abbr acronym address applet embed object area b base basefont bdo bgsound big blink blockquote body br button caption center cite code col colgroup dd del dfn dir ul div dl dt em fieldset font form frame frameset h1 h2 h3 h4 h5 h6 head hr html i iframe img input ins kbd label legend li listing link map marquee menu meta noframes noscript ol optgroup option p param plaintext pre q s samp script select small span strike strong style sub sup table tbody td textarea tfoot th thead title tr tt u var xmp",
+	html5tags = "audio bdi canvas datalist dialog embed keygen menuitem meter output progress rp rt ruby source track video wbr",
+	html5semantics = "article aside details figcaption figure footer header main mark nav section summary time",
+//	haveRequiredAttrs = "a applet area basefont form img link map meta optgroup param script style textarea",
+	allTagsRe = reStr(stdTags, html5tags, html5semantics),
+//	allTagsObj = toObj(stdTags, html5tags),
+	oldDeprTags = {
+		basefont: null, // no conversion necessary
+		big: "span",
+		blink: "p",
+		font: "span",
+		image: null, // cannot find documentation for <image> anywhere
+		isindex: null,
+		listing: "pre",
+		marquee: "p",
+		plaintext: "pre",
+		s: "del",
+		xmp: "pre"
+	},
+	html5depr = {
+		acronym: "abbr",
+//		applet: "object",
+		applet: null,
+		b: "strong",
+		bgsound: "audio", // will switch to <embed> if src type not supported; neither embed nor audio support midi files (june 2015)
+//		bgsound: "embed",
+		center: "div",
+		dir: "ul",
+		frame: null,
+		frameset: null,
+		i: "em",
+		noframes: null,
+		strike: "del",
+		tt: "code",
+		u: "span"
+	},
+	stdInputTypes = "button hidden image reset text radio checkbox password file submit", 
+	html5inputTypes = "date color datetime datetime\-local email month number range search tel time url week",
+	inputTypesObj = toObj(stdInputTypes, html5inputTypes),
+	inputsWithValue = "button color date datetime datetime\-local hidden image month number range reset search submit tel text url",	//	
+	attribsMap = {
+		// array members: 0 - still supported, 1 - deprecated (true if all), 2 - replacement method (new attr or "css"), 3 - css array / other repl. options / error message if applicabe (args[2]===false)
+		abbr: ["td", true, "title"], // th.abbr or td.title
+		accept: ["input", "form"], //	List of types the server accepts, typically a file type. now used on inputs only
+		acceptCharset: ["form"], //	List of supported charsets.
+		accesskey: ["global"], //	Defines a keyboard shortcut to activate or add focus to the element.
+		action: ["form"], //	The URI of a program that processes the information submitted via the form.
+		align: ["applet caption col colgroup div embed h1 h2 h3 h4 h5 h6 hr iframe img input legend object p table tbody td tfoot th thead tr", true, "css", ["textAlign"]], //	Specifies the horizontal alignment of the element. (derprecated)
+		alink: ["body", true, "css", ["a:active"]],
+		alt: ["area img input", "applet"], //	 Alternative text in case an image can't be displayed.
+		archive: ["applet object", true], // null, Use the data and type attributes to invoke plugins. To set parameters with these names in particular, the param element can be used
+		async: ["script"], //Indicates that the script should be executed asynchronously.
+		autocomplete: ["form input"], //	Indicates whether controls in this form can by default have their values automatically completed by the browser.
+		autofocus: ["button input keygen select textarea"], //	The element should be automatically focused after the page loaded.
+		autoplay: ["audio video"], //	The audio or video should play as soon as possible.
+		autosave: ["input"], //	Previous values should persist dropdowns of selectable values across page loads.
+		axis: ["td th", true], // Use the scope attribute on the relevant th
+		background:["global", true, "css", ["backgroundImage"]],
+		bgcolor: ["body col colgroup marquee table tbody tfoot td th tr", true, "css", ["backgroundColor"]], //	Background color of the element. Note: This is a legacy attribute. Please use the CSS background-color property instead.
+		border: ["img object table", true, "css", ["borderWidth"]], //	The border width. Note: This is a legacy attribute. Please use the CSS border property instead.
+		buffered: ["audio video"], //	Contains the time range of already buffered media.
+		challenge: ["keygen"], //	A challenge string that is submitted along with the public key.
+		char: ["col", true, "css"], // css
+		charoff: ["col", true, "css"], // css
+		classid: ["object", true], // null Use the data and type attributes to invoke plugins. To set parameters with these names in particular, the param element can be used
+		clear: ["br", true, "css", ["clear"]], // css
+		code: ["applet object", true], // null, Use the data and type attributes to invoke plugins. To set parameters with these names in particular, the param element can be used
+		codebase: ["applet object", true], // null Use the data and type attributes to invoke plugins. To set parameters with these names in particular, the param element can be used
+		codetype: ["object", true], // Use the data and type attributes to invoke plugins. To set parameters with these names in particular, the param element can be used
+		charset: ["meta script", "a link"], //	Declares the character encoding of the page or script.
+		checked: ["command input"], //	Indicates whether the element should be checked on page load.
+		cellpadding: ["table"], //
+		cellspacing: ["table"], //
+		cite: ["blockquote del ins q"], //	Contains a URI which points to the source of the quote or change.
+		class: ["global"], //	Often used with CSS to style elements with common properties.
+		classid: ["object", true], //
+		code: ["applet", true], //	Specifies the URL of the applet's class file to be loaded and executed.
+		codetag: ["object"], //
+		color: ["basefont font hr", true, "css", ["color"]], //	This attribute sets the text color using either a named color or a color specified in the hexadecimal #RRGGBB format. Note: This is a legacy attribute. Please use the CSS color property instead.
+		cols: ["textarea"], //	Defines the number of columns in a textarea.
+		colspan: ["td th"], //	The colspan attribute defines the number of columns a cell should span.
+		content: ["meta"], //	A value associated with http-equiv or name depending on the context.
+		contenteditable: ["global"], //	Indicates whether the element's content is editable.
+		contextmenu: ["global"], //	Defines the ID of a <menu> element which will serve as the element's context menu.
+		controls: ["audio video"], //	Indicates whether the browser should show playback controls to the user.
+		coords: ["a area", "a", "area"], //		A set of values specifying the coordinates of the hot-spot region.
+		compact: "dir dl menu ol ul", // dl, ol, ul => css, else null
+		data: ["object"], //	 Specifies the URL of the resource.
+		datafld: ["a applet button div fieldset frame iframe img input label legend marquee object param select span textarea", true], // null Use script and a mechanism such as XMLHttpRequest to populate the page
+		dataformatas: ["button div input label legend marquee object option select span table"], // null Use script and a mechanism such as XMLHttpRequest to populate the page
+		datapagesize: ["table", true], // null obsoete
+		// need to detect dataset properties
+		dataSet: ["global"], // Lets you attach custom attributes to an HTML element. (data-*)
+		datasrc: ["a applet button div frame iframe img input label legend marquee object option select span table textarea", true], // null Use script and a mechanism such as XMLHttpRequest to populate the page dynamically
+		datetime: ["del ins time"], //	Indicates the date and time associated with the element.
+		declare: ["object", true], // Repeat the object element completely each time the resource is to be reused
+		default: ["track"], //	Indicates that the track should be enabled unless the user's preferences indicate something different.
+		defer	: ["script"], //		Indicates that the script should be executed after the page has been parsed.
+		dir: ["global"], //	Defines the text direction. Allowed values are ltr (Left-To-Right) or rtl (Right-To-Left)
+		dirname: ["input textarea"], //		 
+		disabled: ["button command fieldset input keygen optgroup option select textarea"], //	Indicates whether the user can interact with the element.
+		download: ["a area"], //	Indicates that the hyperlink is to be used for downloading a resource.
+		draggable: ["global"], //	Defines whether the element can be dragged.
+		dropzone: ["global"], //	Indicates that the element accept the dropping of content on it.
+		enctype: ["form"], //	Defines the content type of the form date when the method is POST.
+		event: ["script", true],  // null Use DOM Events mechanisms to register event listeners
+		face: ["font basefont", true], //	Deprecated attribute
+		for: ["label output", "script"], //	Describes elements which belongs to this one. // null Use DOM Events mechanisms to register event listeners
+		form: ["button fieldset input keygen label meter object output progress select textarea"], //	 Indicates the form that is the owner of the element.
+		formaction: ["input button"], //	Indicates the action of the element, overriding the action defined in the <form>.
+		frame: ["table"], //
+		halign: ["col tbody thead tfoot td th tr div", true, "css", ["textAlign"]],
+		headers: ["td th"], //	 IDs of the <th> elements which applies to this element.
+		height: ["canvas embed iframe img input object video", "td th applet div", "css", ["height"]], //	Note: In some instances, such as <div>, this is a legacy attribute, in which case the CSS height property should be used instead. In other cases, such as <canvas>, the height must be specified with this attribute.
+		hidden: ["global"], // attribute	Prevents rendering of given element, while keeping child elements, e.g. script elements, active.
+		high: ["meter"], //	Indicates the lower bound of the upper range.
+		href: ["a area base link"], //The URL of a linked resource.
+		hreflang	: ["a area link"], //Specifies the language of the linked resource.
+		hspace: ["applet div embed iframe input img object", true, "css", ["paddingLeft", "paddingRight"]], //
+		httpEquiv: ["meta"], //	 
+		icon: ["command"], // Specifies a picture which represents the command.
+		id: ["global"],  //	Often used with CSS to style a specific element. The value of this attribute must be unique.
+		ismap: ["img", "input"], // Indicates that the image is part of a server-side image map.// null Unnecessary. Omit it altogether. All input elements with a type attribute in the Image Button state are processed as server-side image maps
+		itemprop: ["global"], //
+		keytype: ["keygen"], // Specifies the type of key generated.
+		kind: ["track"], // Specifies the kind of text track.
+		label: ["track"], // Specifies a user-readable title of the text track.
+		lang: ["global"],  //	Defines the language used in the element.
+		language: ["script", true], // 	Defines the script language used in the element.// convert to type
+// CHECK THIS FOR POSSIBLE COLLISION
+//		link: ["target", true], // null
+		link:["body", true, "css", ["a:link"]],
+		list: ["input"], // Identifies a list of pre-defined options to suggest to the user.
+		longdesc: ["iframe img", true], // <a>
+		loop: ["audio bgsound marquee video"], // 	Indicates whether the media should start playing from the start when it's finished.
+		low: ["meter"], // 	Indicates the upper bound of the lower range.
+		lowsrc: ["img", true], // progressive jpg
+		manifest: ["html"], // Specifies the URL of the document's cache manifest.
+		max: ["input meter progress"], // Indicates the maximum value allowed.
+		maxlength: ["input textarea"], // Defines the maximum number of characters allowed in the element.
+		marginbottom: ["body", true, "css", ["marginBottom"]], // css
+		marginheight: ["body iframe", true, "css", ["marginBottom", "marginTop"]], // css
+		marginleft: ["body", true, "css", ["marginLeft"]], // css
+		marginright: ["body", true, "css", ["marginRight"]], // css
+		margintop: ["body", true, "css", ["marginTop"]], // css
+		marginwidth: ["body iframe", true, "css", ["marginLeft", "marginRight"]], 
+		media: ["a area link style", "source"], // Specifies a hint of the media for which the linked resource was designed.// null Use script to select the media resource(s) to use
+		method: ["form"], // Defines which HTTP method to use when submitting the form. Can be GET (default) or POST.
+		methods: ["a link", true], // null Use the HTTP OPTIONS feature instead
+		min: ["input meter"], // Indicates the minimum value allowed.
+		multiple: ["input select"], // Indicates whether multiple values can be entered in an input of the type email or file.
+		name: ["button form fieldset iframe input keygen object output select textarea map meta param", "applet a embed img option"], // Name of the element. For example used by the server to identify the fields in form submits. // null/Use the id attribute instead
+		nohref: ["area", true], // This attribute indicates that the form shouldn't be validated when submitted. // null obsolete
+		noresize: ["frame"], // 
+		noshade: ["hr", true], // deprecated
+		novalidate: ["form"], // This attribute indicates that the form shouldn't be validated when submitted.
+		nowrap: ["td th", true, "css", ["whiteSpace"]], // white-space: nowrap;
+		object: ["applet", true], // null
+		open: ["details"], //	Indicates whether the details will be shown on page load.
+		optimum: ["meter"], // Indicates the optimal numeric value.
+		pattern: ["input"], //Defines a regular expression which the element's value will be validated against.
+		ping: ["a area"], //	 
+		placeholder: ["input textarea"], // Provides a hint to the user of what can be entered in the field.
+		poster: ["video"], //	A URL indicating a poster frame to show until the user plays or seeks.
+		preload: ["audio video"], // Indicates whether the whole resource, parts of it or nothing should be preloaded.
+		profile: ["head", true], // depercated in html5
+		pubdate: ["time"], // Indicates whether this date and time is the date of the nearest <article> ancestor element.
+		radiogroup: ["command"], //
+		readonly: ["input textarea"], // Indicates whether the element can be edited.
+		rel	: ["a area link"], // Specifies the relationship of the target object to the link object.
+		required: ["input select textarea"], // Indicates whether this element is required to fill out or not.
+		rev: ["a link", true], //null Use the rel attribute instead, with an opposite term. (For example, instead of rev="made", use rel="author"
+		reversed: ["ol"], // Indicates whether the list should be displayed in a descending order instead of a ascending.
+		rows: ["textarea"], // Defines the number of rows in a textarea.
+		rowspan: ["td th"], //	Defines the number of rows a table cell should span over.
+		rules: ["table"], //
+		sandbox: ["iframe"], // 
+		spellcheck: ["global"], // 	Indicates whether spell checking is allowed for the element.
+		scheme: ["meta", true], //	  "Use only one scheme per field, or make the scheme declaration part of the value"
+		scope: ["th", "td"], //	 Use th elements for heading cells
+		scoped: ["style"], // 
+		seamless: ["iframe"], // 
+		selected: ["option"], // Defines a value which will be selected on page load.
+		shape: ["area", "a"], //   Use area instead of a for image maps
+		size: ["input select", "hr font basefont", "css"], //Defines the width of the element (in pixels). If the element's type attribute is text or password then it's the number of characters. deprecated elements added.
+		sizes: ["link"], // 
+		span: ["col colgroup"], //	 
+		src: ["audio bgsound embed iframe img input script source track video"], //The URL of the embeddable content.
+		srcdoc: ["iframe"], //	 
+		srclang: ["track"], //	 
+		srcset: ["img"], // 
+		standby: ["object", true], // null Optimise the linked resource so that it loads quickly or, at least, incrementally
+		start: ["ol", true], //	Defines the first number if other than 1. no replacement  MAYBE css ["counterReset"]
+		step: ["input"], //	 
+		style: ["global"], //	Defines CSS styles which will override styles previously set.
+		summary: ["table"], //  null (re-code)
+		tabindex: ["global"], //	Overrides the browser's default tab order and follows the one specified instead.
+		target: ["a area base form"], // 
+		text: ["global", true, "css", ["color"]],
+		title: ["global"], //	Text to be displayed in a tooltip when hovering over the element.
+		type: ["button input command embed object script source style menu", "list ol ul param"], // Defines the type of the element. // null/param: Use the name and value attributes without declaring value types
+		urn: ["a link", true, "href"], // => href
+		usemap	: ["img object", "input"], // <img>
+		valign: ["col tbody thead tfoot td th tr div", true, "css"], // css
+		value: ["button option input li meter progress param", "li"], // Defines a default value which will be displayed in the element on page load. // ??
+		valuetype: ["param", true], // null Use the name and value attributes without declaring value types
+		vlink: ["body", true, "css", ["a:visited"]],
+		valign: ["col tbody thead tfoot td th tr div", true, "css", ["verticalAlign"]],
+		vspace: ["applet div embed iframe input img object", true, "css", ["paddingTop", "paddingBottom"]], // css
+		width: ["canvas embed iframe img input object video", "col hr table td th applet pre div", "css", ["width"]], // Note: In some instances, such as <div>, this is a legacy attribute, in which case the CSS width property should be used instead. In other cases, such as <canvas>, the width must be specified with this attribute.
+		wrap: ["textarea"], // Indicates whether the text should be wrapped.
+	},
+	requiredAttrMap = {
+		a: "href",
+		applet: "width",
+		area: "href alt",
+		basefont: "size",
+		form: "action",
+// alt attributes use content argument
+//		img: "src alt",
+		input: "type",
+		link: "href",
+		map: "name",
+		meta: "content",
+		optgroup: "label",
+		param: "name",
+		script: "type", // can be omitted, defaults to text/javascript (?)
+		src: "bgsound",
+		style: "type",
+		textarea: "cols rows"
+	},
+	elemsToCache = "address embed object area blockquote br button caption col colgroup ul ol div fieldset form h1 h2 h3 h4 h5 h6 hr iframe img input legend map menu optgroup option param pre select textarea title",
+	//
+	attribsObj = attribsObj || {},
+	forceAttributes = attribsObj.forceAttributes || false,
+	// check to see if form elements have already been specified a certain attribute (property) in attribsObj, uses re for checking multiple values
+	hasAttribute = function(attrb, val){return attribsObj && attribsObj.hasOwnProperty(attrb) && (val ? (val.indexOf("|")>0) ? attribsObj[attrb].match("/^("+val+")$/") : (val.indexOf(" ")>0) ? attribsObj[attrb].match("/^("+val.replace(/\s/g, "|")+")$/") : val==attribsObj[attrb] : true)};
+	// detect previous element, used for missing attibutes, e.g. name attribute for radio buttons
+	prevElm = window.prevElm || null;
+	// internally used flags
+	exitFunction = isModCSS = isModJS =  false;
+	// begin checking tag name, first for old tags then deprecated tags under HTML5 doctype
+	if (tagName in oldDeprTags || (isHtml5docType && tagName in html5depr)) { // !isQuirksMode && 
+		tagName = oldDeprTags[tagName] || html5depr[tagName];
+		// workarounds for deprecated and replaced tags follow here, converting element attributes to style attributes
+		// or writing styles and / or JavaScript for modern compliance
+		if (origName.match(/blink|marquee/)) {
+			isModJS = true;
+			attribsObj.id = origName+ ++incr;
+		} else if (origName=="bgsound") {
+			// going with the <audio> element, then <embed> if not possible. By no means infallible, working on a midi option
+			/*
+			original accepted file types were wav, au and mid.
+			attributes:
+			balance - This attribute defines a number between -10,000 and +10,000 that determines how the volume will be divided between the speakers.
+			loop - This attribute indicates the number of times a sound is to be played and either has a numeric value or the keyword infinite.
+			src - This attribute specifies the URL of the sound file to be played, which must be one of the following types: .wav, .au, or .mid.
+			volume - This attribute defines a number between -10,000 and 0 that determines the loudness of a page's background sound.
+			*/
+			newAttribsObj = {};
+			// need to exit if no src attribute passed
+			newAttribsObj.src = attribsObj.src || false;
+			if (!newAttribsObj.src) {
+//				console.warn("addDOMnode could not change <"+origName+"> to <"+tagName+"> - no src attribute found");
+				showMessage("warn", "could not change <"+origName+"> to <"+tagName+"> - no src attribute found");
+				exitFunction = true;
+			} else {
+				// mime types:
+				// get file extension
+				var fileNameParts = newAttribsObj.src.split("."), ext=fileNameParts[fileNameParts.length-1],
+				// map extension to mime type
+				audioMimeTypes = {
+//					wav: "wave", 
+					wav: 'wav; codecs="1"', // 
+					au: 'basic',
+					mid: 'midi', // x-midi
+					// not on original spec but included here anyways
+					mp3: 'mpeg',
+					ogg: 'ogg; codecs="vorbis"' // 
+				},
+				mimeType = "audio/"+audioMimeTypes[ext],
+				//try <audio> for compatibility
+				testElm = d.createElement("AUDIO");
+				if (testElm.canPlayType &&  ""!==testElm.canPlayType(mimeType).replace(/no/, '')) {
+					// audio properties
+//					console.log("file type "+ext+" is supported in <audio> element in this browser version");
+					showMessage("debug", "file type "+ext+" is supported in <audio> element in this browser version");
+					newAttribsObj.loop = Boolean(attribsObj.loop);
+					newAttribsObj.autoplay = true;
+				}
+				// else try <embed>
+				else {
+//					console.log("testing support for file type "+ext+" in <embed> element");
+					showMessage("debug", "testing support for file type "+ext+" in <embed> element");
+					// embed properties
+					tagName = "embed";
+					newAttribsObj.height = "0";
+					newAttribsObj.width = "0";
+					newAttribsObj.type = mimeType;
+					newAttribsObj.loop = attribsObj.loop;
+				}
+				attribsObj = newAttribsObj;
+				delete testElm;
+			}
+		}
+		else if (origName.match(/^(font|basefont)$/)) {
+			isModCSS = true;
+			// array of replacements, attrib to style
+			[
+				["face", "fontFamily"],
+				["size", "fontSize"],
+				["color", "color"]
+			].forEach(function(attrb) {
+				if (attrb[0] in attribsObj) {
+					// fix the 'size' issue
+					if (attrb[0]=="size") {
+						var sizeAttrVal = attribsObj[attrb[0]],
+						plMin = sizeAttrVal.charAt(0).match(/-|\+/) ? true : false;
+						sizeVal = ((plMin) ? +sizeAttrVal+3 : +sizeAttrVal),
+						// maybe change these to rem values (?)
+//						sizeValues = "xx-small x-small small initial larger large x-large xx-large".split(" "),
+						sizeValues = "0.4 0.6 0.8 1 1.2 1.4 1.6 1.8".split(" "),
+						attribsObj[attrb[0]] = sizeValues[sizeVal]+"rem";
+					}
+					(typeof styleRules == "object") ? styleRules[attrb[1]] = attribsObj[attrb[0]] : styleRules+= ((styleRules.length>0) ? ";" : "")+attrb[1].camelize()+":"+attribsObj[attrb[0]];
+					if (origName==="basefont") {
+						for (var s in styleRules) {
+//							console.log("adding rule "+s+" for "+tagName+" ("+origName+")");
+							if (styleRules.hasOwnProperty(s)) {
+								d.body.style[s] = styleRules[s];
+								styleRules[s] = null;
+							}
+						}
+						exitFunction = true;
+					}
+				}
+				// clear the attribute once added to CSS
+				delete attribsObj[attrb[0]];
+			});
+		} else {
+			var attrCssRepl = false;
+			switch (origName) {
+				case "big" :
+					attrCssRepl = ["fontSize", "1.2em"];
+					isModCSS = true;
+				break;
+				case "center" :
+					attrCssRepl = ["textAlign", "center"];
+					isModCSS = true;
+				break;
+				case "u" :
+					attrCssRepl = ["textDecoration", "underline"];
+					isModCSS = true;
+				break;
+				default:
+				break;
+			}
+			if (attrCssRepl) (typeof styleRules == "object") ? styleRules[attrCssRepl[0]] = attrCssRepl[1] : styleRules+=((styleRules.length>0) ? ";" : "")+attrCssRepl[0].dasherize()+":"+attrCssRepl[1];
+		}
+		if (exitFunction) return false;
+		// alert coder to changed element name
+		if (tagName!==null && tagName!==origName) showMessage("info", "changed element <"+origName+"> to <"+tagName+">"+((isModCSS || isModJS) ? "," : "")+(isModCSS ? " added inline CSS" : "")+(isModJS ? ((isModCSS ? ", and " : " added ")+"JavaScript") : "")); // +" for HTML5 compatibility"
+		// console.info("addDOMnode changed element <"+origName+"> to <"+tagName+">"+((isMod === true) ? " adding inline CSS" : "")+(origName.match(/blink|marquee/) ? " and JavaScript" : "")); // +" for HTML5 compatibility"
+	}
+	// allow naming of input elements by specifying type, e.g.  "text" => "input:text"
+	if (tagName && tagName.indexOf(":")<0 && tagName in inputTypesObj) tagName="input:"+tagName; 
+	// for input tags (and possibly others) split string and assign the type value
+	var tagNames = (tagName) ? tagName.split(":") : [null, false];
+	tagName = tagNames[0];
+	if (tagNames[1] && !attribsObj.type) attribsObj.type = tagNames[1];
+	// check for browser support for html5 input elements, fail if not accepted by UA
+	if (tagName=="input" && attribsObj.type in toObj(html5inputTypes)) {
+		// borrowed from Mike Taylor
+		tmpTxt = ":(";
+		tmpTag = d.createElement(tagName);
+		tmpTag.setAttribute("type", attribsObj.type);
+		tmpTag.value = tmpTxt;
+		notCompat = Boolean(tmpTag.value == tmpTxt);
+		if (notCompat) {
+//			console.warn("addDOMnode could not create <"+tagName+" type=\""+attribsObj.type+"\"> : this element type is not (yet) supported by this browser"); // !isQuirksMode && 
+			showMessage("warn", "could not create <"+tagName+" type=\""+attribsObj.type+"\"> : this element type is not (yet) supported by this browser"); // !isQuirksMode && 
+			// construct a placeholder element to indicate unsupported type (?)
+			if (debug) {
+				makeDebugElem();
+			} else {
+				return false;
+			}
+		}
+		delete tmpTag;
+	}
+	// check for match against all legal tag names
+	if (tagName in toObj(stdTags, html5tags, html5semantics)) {
+		// do nothing if tag name is valid
+	} else {
+//		console.warn("addDOMnode could not create <"+origName+"> - "+((isHtml5docType && origName in  html5depr) ? "disallowed" : "non-standard")+" name"+((isHtml5docType && origName in  html5depr) ? ": <"+origName+"> has been deprecated in HTML5" : "")); // !isQuirksMode && 
+		showMessage("warn", "could not create <"+origName+"> - "+((isHtml5docType && origName in  html5depr) ? "disallowed" : "non-standard")+" name"+((isHtml5docType && origName in  html5depr) ? ": <"+origName+"> has been deprecated in HTML5" : "")); // !isQuirksMode && 
+		return false;
+	}
+	// 
+	// create name attribute for input:radio if not exists, keeping sequential radio inputs with the same name
+//	if (tagName=="input" && hasAttribute("type") && attribsObj.type=="radio" && !hasAttribute("name")) {
+	if (tagName=="input" && hasAttribute("type", "radio") && !hasAttribute("name")) {
+		if (prevElm && prevElm.tagName.toLowerCase()=="input" && prevElm.type && prevElm.type=="radio" && prevElm.name) {
+			attribsObj.name=prevElm.name;
+		}
+		// no previous radio buttton name? Create a name attribute for reuse
+		else {
+			attribsObj.name = attribsObj.type+"Group"+ ++incr;
+		}
+	}
+	// html5 verification
+//	var isHtml5tag = (hasAttribute("type") && attribsObj.type in toObj(html5inputTypes)) ? true : (tagName && tagName in toObj(html5tags, html5semantics)) ? true : false;
+	var isHtml5tag = (hasAttribute("type", html5inputTypes)) ? true : (tagName && tagName in toObj(html5tags, html5semantics)) ? true : false;
+	// checking for use of HTML5 tags under non-HTML5 doctype
+	if (!isHtml5docType && isHtml5tag) { // !isQuirksMode && 
+		if (tagName in toObj(html5semantics)) {
+			tagName = "div";
+			stylePre = ".";
+			if (origName=="main") {
+				// one instance per document
+				attribsObj.id = origName;
+				stylePre = "#";
+			} else {
+			// todo: fix the class adding issue
+				attribsObj.className = origName;
+			}
+			foundRules = [];
+			findSheet: while (--sLen)  {
+				sheetRules = sheets[sLen].rules || sheets[sLen].cssRules;
+				rLen = sheetRules.length || 0;
+				[].slice.call(sheetRules).forEach(function(sr){
+					if (sr.selectorText.indexOf(origName)>-1) foundRules.push(sr.style.cssText);
+				});
+			}
+//			console.log(foundRules);
+			showMessage("info", foundRules, "background-color:#224466;color:#ffffff");
+			
+			if (!window.localSheet) window.localSheet = createStyleSheet();
+			localSheet = d.styleSheets[d.styleSheets.length-1];
+			sheetRulesLoc = localSheet.rules || localSheet.cssRules;
+			foundRules.forEach(function(fr){
+				srLen = sheetRulesLoc.length || 0;
+				localSheet.addCSSRule(stylePre+origName, fr, srLen);
+			});
+		} else {
+//			console.warn("addDOMnode could not create element <"+tagName+((tagName=="input" && !!attribsObj.type) ? " type=\""+attribsObj.type+"\"" : "")+"> - HTML5 element specified but the doctype is not HTML5 or is missing");
+			showMessage("warn", "could not create element <"+tagName+((tagName=="input" && !!attribsObj.type) ? " type=\""+attribsObj.type+"\"" : "")+"> - HTML5 element specified but the doctype is not HTML5 or is missing");
+			return false;
+		}
+	}
+	// end of validation
+	// begin building the node
+	var a = d.createElement(tagName);
+    // insert position (need to add to the DOM tree before using insertAdjacentHTML)
+	if (typeof insertPos=="undefined" && attribsObj.insert) insertPos = attribsObj.insert;
+    // code from Prototypejs
+    switch (insertPos) {
+		// from prototypejs insert()
+        case "before":
+            parent.parentNode.insertBefore(a, parent);
+        break;
+        case "after":
+            parent.parentNode.insertBefore(a, parent.nextSibling);
+        break;
+        case "top":
+            parent.insertBefore(a, parent.firstChild);
+        break;
+        case "bottom":
+        default:
+            parent.appendChild(a);
+        break;
+    }
+    // attributes object 	
+    if (attribsObj && typeof attribsObj == "object") {
+		var attrib, propa;
+        for (attrib in attribsObj) {
+			/*
+			*/
+			// deal with custom (internal) attribs first
+			// use 'forceAttributes' as an attribute to make attributes act as global, i.e. even non-member attribs will be parsed
+			// but don't delete here as needed later!!
+			// use 'insert' as an attribute to tap into the insertPos argument where insertPos initially not defined
+			// use 'addLabel' to incude a label element for form items
+			// debug will insert a placeholder element where element is not yet supported
+//			if ((attrib=="insert" && attrib==insertPos) || attrib=="debug") {
+			if (attrib.match(/^insert|insertPos|debug$/)) {
+				// no longer needed, remove from attribs
+				delete attribsObj[attrib];
+			}
+			// use 'addLabel' to incude a label element for form items
+			else if (attrib.toLowerCase()=="addlabel" && attribsObj[attrib]!==false) {
+				// use 'before' and 'after' to insert label tag, treat boolean true as before (default)
+				attribsObj[attrib] = (attribsObj[attrib]==true) ? "before" : attribsObj[attrib];
+				//	don't want two label elements next to each other (do we?)
+				if (prevElm==null || (prevElm && prevElm.nodeType==1 && prevElm.tagName.toLowerCase()!=="label")) {
+					a.addDOMnode("label", content, {for:a.id}, {margin:"0 0.5em"}, attribsObj[attrib]);
+				}
+				delete attribsObj[attrib];
+			}
+			// event listener
+			else if (attrib.substring(0, 2)=="on") {
+				evName = attrib.substring(2);
+				window.addEventListener("load", function(event) {
+					showMessage("debug", "added an 'on"+evName+"' event with a value of \""+attribsObj[attrib]+"\"");
+					// need to avoid eval (?)
+					a.addEventListener(evName, function(event) {var z = (new Function('return '+attribsObj[attrib]))();}, false);
+//					a.addEventListener(evName, function(event) {eval(attribsObj[attrib]);}, false);
+				}, false);
+			}
+			// handle case of deprecated attributes to CSS values
+			// body attributes to global styles
+			else if (attrib.match(/^(link|alink|vlink|marginbottom|margintop|marginleft|marginright|marginwidth|marginheight)$/)) { //  && !!forceAttributes
+				var bodyStyles = attribsMap[attrib][3];
+				if(typeof localSheet=="undefined") {
+					localSheet = createStyleSheet();
+					window.localSheet = localSheet;
+				}
+				localSheet = d.styleSheets[d.styleSheets.length-1];
+				// apply rules to sheet
+				sheetRules = localSheet.rules || localSheet.cssRules;
+				rLen = (sheetRules && sheetRules.length) || 0;
+				localSheet.addCSSRule(bodyStyles[0], "color: "+attribsObj[attrib], rLen);
+//				console.info("addDOMnode converted the attribute '"+attrib+"' to a global CSS rule in a local stylesheet: "+bodyStyles[0]+" {color: "+attribsObj[attrib]+"}"); //  (index:"+rLen+")
+				showMessage("info", "converted the attribute '"+attrib+"' to a global CSS rule in a local stylesheet: "+bodyStyles[0]+" {color: "+attribsObj[attrib]+"}"); //  (index:"+rLen+")
+					
+				delete attribsObj[attrib];
+			}
+			// element attributes to inline style
+			//	align|background|bgcolor|border|clear|height|hspace|halign|nowrap|start|valign|vspace|width
+			else if ((attrib.match(/^(align|background|bgcolor|border|clear|height|hspace|halign|nowrap|start|valign|vspace|width|marginbottom|margintop|marginleft|marginright|marginwidth|marginheight)$/) && !!attribsMap[attrib] && attribsMap[attrib][0].split(" ").indexOf(tagName)<0) || (tagName=="div" && attrib.match(/^(align|background|bgcolor|border|clear|height|hspace|halign|nowrap|start|valign|vspace|width|marginbottom|margintop|marginleft|marginright|marginwidth|marginheight)$/))) {
+				styleAttrs = attribsMap[attrib][3];
+				styleAttrs.forEach(function(attr) {
+					// construct correct modern CSS value
+					// corrected for % values
+					val = (attrib=="background") ? "url("+attribsObj[attrib]+")" : (attrib.match(/border|height|hspace|vspace|width/)) ? (attribsObj[attrib].indexOf("%")<0 ? attribsObj[attrib]+"px" : attribsObj[attrib]) : attribsObj[attrib];
+					(typeof styleRules == "object") ? styleRules[attr] = val : styleRules+= ((styleRules.length>0) ? ";" : "")+attr.dasherize()+":"+val;
+					if (attrib=="border") (typeof styleRules == "object") ? styleRules.borderStyle = "solid" : styleRules+= ((styleRules.length>0) ? ";" : "")+"border-style:solid";
+					showMessage("info", "converted the attribute '"+attrib+"="+attribsObj[attrib]+"' to an inline CSS rule '"+attr.dasherize()+": "+val+"'", "background-color:#eee;color:#555"); //  (index:"+rLen+")
+				});
+				delete attribsObj[attrib];
+			} else {
+				// workarounds for reserved words and customised attrib names
+//				propa = (tagName == "label" && attrib == "htmlFor") ? "for" : (attrib == "class") ? "className" : (attrib==="tooltip") ? "title" : attrib;
+				propa = attrib.camelize();
+				if (tagName == "label" && attrib == "htmlFor") {
+					propa = "for";
+				} else if (attrib == "className") {
+					propa = "class";
+				} else if (attrib == "tooltip") {
+					propa = "title";
+				}
+				// check for valid attribute for the tag name
+				var attrInElem = false, allowedTags = (attribsMap[propa]) ? attribsMap[propa][0].split(" ") : [];
+				allowedTags.forEach(function(el){
+					if (el == tagName || el=="global") attrInElem= true;
+				});
+				attrName = (propa == "className") ? "class" : propa;
+				if (!attrInElem && !!forceAttributes && attrib.match(/^(insert|forceAttributes|addLabel|debug)$/)==null) {
+//					console.info("addDOMnode added the attribute '"+attrName+"' to the element <"+tagName+">"  +((tagName==origName) ? "" : " (originally <"+origName+">)")+" even though this attribute is not supported by the element (attribute was forced)");
+					showMessage("info", "added the attribute '"+attrName+"' to the element <"+tagName+">"  +((tagName==origName) ? "" : " (originally <"+origName+">)")+" even though this attribute is not supported by the element (attribute was forced)");
+				}
+				// filter attributes to exclude custom attributes and event handlers, but allow forceAttributes to override
+				if ((attribsObj.hasOwnProperty(attrib) && attrib.substring(0, 2)!=="on") && (attrib.match(/^(insert|forceAttributes|addLabel|debug)$/)==null || !!forceAttributes)) a.setAttribute(attrName, attribsObj[attrib]);
+			}
+        }
+		
+    }
+    // css rules,  object or inline style string - convert and sanitise string to object first for better x-browser compatibiity
+	 if (styleRules && typeof styleRules == "string") {
+		newObj = {};
+		stylesArr = styleRules.split(";");
+		stylesArr.forEach(function(sty){
+			styPrt = sty.split(":");
+			styProp = styPrt[0].trim();
+			styVal = styPrt[1].trim();
+			newObj[styProp.camelize()] = styVal;
+		});
+		styleRules = newObj;
+    }
+    if (styleRules && typeof styleRules == "object") {
+		var rule, propr, styles, pre, prefix;
+		// prefix properties by vendor automatically
+		// http://davidwalsh.name/vendor-prefix 
+		// with my optimisation
+		styles = window.styles || window.getComputedStyle(d.documentElement, '');
+		pre = window.pre || ((Array.prototype.slice.call(styles).join('').match(/-(moz|webkit|ms)-/) || (styles.OLink === '' && ['', 'O']))[1]);
+		prefix = window.prefix || ('Webkit|Moz|ms|O').match(new RegExp('(' + pre + ')', 'i'))[1];
+		window.styles = styles;
+		window.pre = pre;
+		// force opera prefix to upper case - dunno why not working as expected!
+		if (window.opera) prefix = prefix.toUpperCase();
+		window.prefix = prefix;
+		var prefixed = function(p, prop){return (p=="") ? prop : ""+p+(prop.charAt(0).toUpperCase()+prop.substring(1))};
+        for (rule in styleRules) {
+			// workarounds for x-browser compatibility
+            propr = (rule.match(/float/i)) ? (typeof (a.style.styleFloat) == "undefined" ? 'cssFloat' : 'styleFloat') : rule;
+			// find and use prefixed style (if it exists)
+            if (styleRules.hasOwnProperty(rule)) a.style[(!!prefixed && prefixed(prefix, propr) in a.style) ? prefixed(prefix, propr) : propr] = styleRules[rule];
+        }
+    }
+	// strings only, no empty text nodes
+    if (content && typeof content == "string" && content.length > 0) {
+		/*
+		The value attribute is used differently for different input types:
+
+		For "button", "reset", and "submit" - it defines the text on the button
+		For "text", "password", and "hidden" - it defines the initial (default) value of the input field
+		For "checkbox", "radio", "image" - it defines the value associated with the input (this is also the value that is sent on submit)
+		
+		Note: The value attribute is required with <input type="checkbox"> and <input type="radio">.
+		Note: The value attribute cannot be used with <input type="file">.
+		
+		*/
+		// handle checkbox and radio input cases, set a value and add id attribute
+//		if (tagName=="input" &&  (hasAttribute("type") && a.type.match(/radio|checkbox/))) {
+		if (tagName=="input" && hasAttribute("type", "radio|checkbox")) {
+			if (!hasAttribute("value")) a.value = toUnder(content); 
+			// check for existing ids to avoid collision
+			if (!a.id) a.id = tagName+ ++incr;
+		}
+		// use content as alt text, if already set add a title attribute
+		if (tagName.match(/^(img|area)$/)) {
+			(!!attribsObj.alt) ? attribsObj.title = content : attribsObj.alt = content;
+		}
+		// insert content as placeholder value where available for input[type=text] (HTML5)
+		// we assume empty form elements, so content will be assigned to the placeholder text attribute
+		//  to override the default action, uncomment the line below
+		/*
+		
+		if (!attribsObj.placeholder) attribsObj.placeholder=null;
+		
+		*/
+		if (tagName=="input" && 'placeholder' in a && !hasAttribute('placeholder') && (hasAttribute("type") && a.type.match(/text|search|url|tel|email|password/)) && !hasAttribute("addLabel")) a.setAttribute("placeholder", content); 
+//		if (tagName=="input" && 'placeholder' in a && !hasAttribute('placeholder') && hasAttribute("type", "text|search|url|tel|email|password") && !hasAttribute("addLabel")) a.setAttribute("placeholder", content); 
+		// deal with option elements
+		else if (tagName=="option") {
+			// select (or optgroup) > option elements can have different value attributes and text node values
+			if (parent.nodeName.toLowerCase().match(/select|optgroup/)) a.addText(content);
+			// set value attribute if not specified, for datalist.childNodes and option
+			if (!hasAttribute("value")) a.setAttribute("value", content);
+		}
+		// for content without HTML tags: if element is input and no value specified, value is content - otherwise use addText
+		// for content containing HTML tags or for radio and checkboxes: use insertAdjacentHTML
+		else {
+			// NOTE: inline deprecated tags are not substituted (yet)
+			(content.match(/<\/[a-zA-Z].*?>|<.*?\/>|&.*?;/) !== null) ?
+			a.insertAdjacentHTML('beforeend', content) : (tagName=="input" && !hasAttribute("value") && (hasAttribute("type", inputsWithValue) && !hasAttribute("addLabel"))) ?
+			a.setAttribute("value", toUnder(content)) : ((a.type && a.type.match(/radio|checkbox/)) ?
+			a.addDOMnode("label", content, {for:a.id}, {margin:"0 0.5em"}, "before") : a.addText(content)); // fix for when no id set for an obj
+		}
+    } else if (!!content) {
+		a.insertAdjacentHTML('beforeend', content);
+	}
+	// add reference for next element
+	if (tagName in toObj(elemsToCache)) prevElm = a;
+	// miscellaneous additions
+	if (origName=="blink") {count=0;window.setInterval(function(){count++;	d.getElementById(attribsObj.id).style.visibility=(count%2)?"hidden":"visible";},1000);}
+	else if (origName=="marquee") {window.setInterval(function(){elm = d.getElementById(attribsObj.id);txt=elm.innerHTML;elm.innerHTML=(txt.substr(1)+txt.charAt(0));},250);}
+    return a;
+}
+// add method to native Element object
+if (!Element.addDOMnode) Object.defineProperty(Element.prototype, "addDOMnode", {
+    enumerable: false,
+    writable: true,
+    value: function(tagName, content, attribsObj, styleRules, insertPos) {
+        return addDOMnode(tagName, this, content, attribsObj, styleRules, insertPos);
+    }
+});
+// add method to native String object
+if (!String.addDOMnode) Object.defineProperty(String.prototype, "addDOMnode", {
+    enumerable: false,
+    writable: true,
+    value: function(tagName, content, attribsObj, styleRules, insertPos) {
+        return addDOMnode(tagName, this, content, attribsObj, styleRules, insertPos);
+    }
+});
+</script>
+<link href='http://fonts.googleapis.com/css?family=Lato:400,700' rel='stylesheet' type='text/css'>
+<!--
+-->
+<style type="text/css">
+body {margin:0;padding:0}
+body, h1, h2, h3, h4, input, select {
+	font-family: Lato, sans-serif, Arial;
+}
+h2, h3, h4 {color:#600}
+h1, footer {background: #600;color:#ffc;padding:1em;margin:0}
+footer {background:#345;letter-spacing:0.2em}
+h2, h3, h4, p, div, ul li, canvas {margin-left:24px}
+input[type="checkbox"] {
+	vertical-align:middle
+}
+input[type="radio"] {
+	vertical-align:text-top
+}
+.injectedspan {
+	padding: 0.3em;
+	background-color: #def;
+	color:#500;
+}
+</style>
+</head>
+
+<body>
+<script src="addDOMnode.examples.js"> </script>
+</body>
+</html>
